@@ -1,0 +1,2 @@
+需加入 best.pt 和 video 資料夾
+測試影片放入 video 中

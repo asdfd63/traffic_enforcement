@@ -53,7 +53,7 @@ def main(source_video_path: str,
 
     vertex = load_zones_config(file_path=zone_configuration_path)  # 從 JSON 檔案載入座標配置
     types = load_zones_config(file_path=type_configuration_path)  # 從 JSON 檔案載入類別配置
-    # types = [1, 2, 3, 3, 4] => 1:紅綠燈 2:車流 3:迴轉 4:臨停
+    # types = [1, 2, 3, 3, 4] 代號 1:紅綠燈 2:車流 3:迴轉 4:臨停
     polygons = []
 
     for idx, cls in enumerate(types):
@@ -77,7 +77,7 @@ def main(source_video_path: str,
             START = sv.Point(vertex[idx][0][0].item(), vertex[idx][0][1].item())
             END = sv.Point(vertex[idx][1][0].item(), vertex[idx][1][1].item())
 
-    # 創建字典來追蹤越界的對象
+    # 建立字典來追蹤越界的對象
     car_crossed = {}
     moto_crossed = {}
 
