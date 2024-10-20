@@ -13,13 +13,13 @@ import threading
 # 說明：串流，https://blog.csdn.net/submarineas/article/details/110083906
 
 q = queue.Queue()  # 建立佇列存放影格
-release = False  # 是否釋放資源
-is_ret = True  # 串流是否結束
+is_display = True  # 視窗是否關閉
+is_receive = True  # 串流是否結束
 
 cur_time = 0  # 經過時間
 crop_cnt = 0  # 已截圖數
 crop_max = 0  # 截圖最大數
-frame_cnt = 0  # 總影格數
+frame_pos = 0  # 經過影格數
 
 # 建立字典來追蹤越界的對象
 crossed_objects = {}
@@ -57,20 +57,18 @@ def receive(rtsp_url: str, fps: float) -> None:
     cap = cv2.VideoCapture(rtsp_url)  # 擷取串流影像
     ret, frame = cap.read()  # 讀取首個影格
     q.put(frame)  # 將影格放入佇列
-    fp = 0  # 經過影格數
-    global release, is_ret, frame_cnt, cur_time
+    global is_display, is_receive, frame_pos, cur_time
     while ret:  # 當串流進行中
-        frame_cnt = frame_cnt + 1
-        cur_time = round(frame_cnt / fps, 1)  # 計算經過時間
-        fp += 1
-        ret = cap.grab()  # 從視訊檔案或攝影機抓取下一影格，並在成功的情況下回傳 true
-        if fp % 2 == 0:  # 跳幀處理
+        cur_time = round(frame_pos / fps, 1)  # 計算經過時間
+        frame_pos += 1
+        ret = cap.grab()  # 從視訊檔案或攝影機抓取下一影格，並在成功的情況下回傳 True
+        if frame_pos % 2 == 0:  # 跳幀處理
             ret, image = cap.retrieve()  # 解碼並回傳下一個影格
             q.put(image)  # 將影格放入佇列
-        if release:
-            cap.release()  # 釋放資源
-    cap.release()
-    is_ret = False
+        if not is_display:
+            cap.release()  # display 函式結束需釋放資源
+    cap.release()  # 串流結束需釋放資源
+    is_receive = False
 
 
 def display(zone_configuration_path: str, device: str, confidence: float, iou: float, classes: List[int],
@@ -78,7 +76,7 @@ def display(zone_configuration_path: str, device: str, confidence: float, iou: f
     """ 接收影格處理後顯示 """
 
     print("Start display")
-    global frame_cnt, crop_cnt, cur_time, crop_max
+    global frame_pos, crop_cnt, cur_time, crop_max
 
     # 定義線段座標 (停止線)
     points = load_zones_config(file_path=zone_configuration_path)
@@ -106,7 +104,7 @@ def display(zone_configuration_path: str, device: str, confidence: float, iou: f
             # 燈號檢測
             light_img = img_crop(frame, 1345, 311, 70, 19, 1)
             light_img = cv2.cvtColor(light_img, cv2.COLOR_BGR2RGB)
-            light_type = estimate_label(light_img, frame_cnt, False)
+            light_type = estimate_label(light_img, frame_pos, False)
 
             # 繪製軌跡並計算越線物體的數量
             for box, track_id, track_clss in zip(boxes, track_ids, track_cls):
@@ -167,19 +165,17 @@ def display(zone_configuration_path: str, device: str, confidence: float, iou: f
                 )  # 用標籤註解場景中區域
 
             # 場景加入文字
-            count_text = f"Objects crossed car: {len(crossed_objects)}"
-            count_text_moto = f"Objects crossed moto: {len(crossed_objects_moto)}"
-            cv2.putText(annotated_frame, count_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-            cv2.putText(annotated_frame, count_text_moto, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+            cv2.putText(annotated_frame, f"Objects crossed car: {len(crossed_objects)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+            cv2.putText(annotated_frame, f"Objects crossed moto: {len(crossed_objects_moto)}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
             cv2.putText(annotated_frame, str(cur_time), (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
             cv2.putText(annotated_frame, str(light_type), (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
             cv2.imshow("frame", annotated_frame)  # 顯示場景於視窗
 
-        if cv2.waitKey(1) & 0xFF == ord('q') or not is_ret:  # 當按下 Q 或是串流已結束
-            global release
-            release = True  # 需釋放資源
-            break
+        if cv2.waitKey(1) & 0xFF == ord('q') or not is_receive:  # 當按下 Q 或是串流已結束
+            global is_display
+            is_display = False  # 關閉視窗需釋放資源
+            break  # 結束函式關閉視窗
 
 
 def main(zone_configuration_path: str,
