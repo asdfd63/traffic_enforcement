@@ -70,6 +70,7 @@ def main(source_video_path: str,
     vertex = load_zones_config(file_path=zone_configuration_path)  # 從 JSON 檔案載入座標配置
     types = [1, 2, 3, 3, 4]  # 可以從 type_configuration_path 載入
 
+    # 定義違停區
     polygons = []
     for idx, cls in enumerate(types):
         if cls == 4:
@@ -116,12 +117,12 @@ def main(source_video_path: str,
     pre_side = {}
     cur_side = {}
 
-    img_cnt = 0  # 已截圖數
     frame_pos = 0  # 經過影格數
-    crop_max = 0  # 截圖上限
+    crop_cnt = 0  # 已截圖數
+    crop_max = 0  # 截圖最大數
 
     for frame in frames_generator:  # 提取影格
-        results = model(frame, verbose=False, device=device, conf=confidence)[0]
+        results = model(frame, verbose=False, device=device, conf=confidence)[0]  # 使用 YOLOv8 推理
         detections = sv.Detections.from_ultralytics(results)  # 根據 YOLOv8 推理結果建立檢測實例
         detections = detections[find_in_list(detections.class_id, classes)]  # 選擇僅屬於選定類別集的偵測
         detections = detections.with_nms(threshold=iou)  # 對檢測集執行非極大值抑制
@@ -161,8 +162,6 @@ def main(source_video_path: str,
             cy = int(y_center)
 
             cv2.circle(annotated_frame, (cx, cy), 4, 	(255, 0, 255), -1)
-            # cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-            # cv2.putText(annotated_frame, f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
 
             # 偵測物件是否在 area1 中
             if area1 is not None:
@@ -189,22 +188,23 @@ def main(source_video_path: str,
 
                     if id not in car_crossed and cls == 1:  # 假設類別 1 是汽車
                         car_crossed[id] = True
-                        if img_cnt < crop_max:  # 截圖
+                        if crop_cnt < crop_max:  # 限定截圖次數
                             crop_img = img_crop(annotated_frame, x1, y1, w, h, zoom=1.5)
                             filename = "save/" + str(cur_time) + 's_ID(' + str(id) + ').jpg'
                             cv2.imwrite(filename, crop_img)
-                            img_cnt += 1
+                            crop_cnt += 1
 
                     if id not in moto_crossed and cls == 2:  # 假設類別 2 是摩托車
                         moto_crossed[id] = True
-                        if img_cnt < crop_max:  # 截圖
+                        if crop_cnt < crop_max:  # 限定截圖次數
                             crop_img = img_crop(annotated_frame, x1, y1, w, h, zoom=3)
                             filename = "save/" + str(cur_time) + 's_ID(' + str(id) + ').jpg'
                             cv2.imwrite(filename, crop_img)
-                            img_cnt += 1
+                            crop_cnt += 1
 
                 pre_side[id] = cur_side[id]
 
+            # 離開線段範圍則不計入
             elif id in pre_side:
                 pre_side.pop(id)
 
@@ -236,7 +236,7 @@ def main(source_video_path: str,
                 custom_color_lookup=custom_color_lookup,
             )
 
-        # 繪製違規區域
+        # 繪製違規迴轉區域
         if area1 is not None:
             cv2.polylines(annotated_frame, [area1], True, (255, 255, 255), 2)
         if area2 is not None:
