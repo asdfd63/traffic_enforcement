@@ -228,7 +228,7 @@ def display(device: str, confidence: float, iou: float, classes: List[int],
 
 def start():
     """ 執行主程式 """
-    global ocv, is_display, is_receive
+    global ocv
 
     model = YOLO(weights)             # 初始化 YOLO 模型
     cap = cv2.VideoCapture(rtsp_url)  # 擷取串流影像
@@ -251,7 +251,7 @@ def start():
     timers = [FPSBasedTimer(round(fps)) for _ in zones]  # 對每個區域使用指定的 fps 初始化 FPSBasedTimer 物件
 
     ocv = False      # 先結束原來程式
-    time.sleep(0.5)  # 設定間隔
+    time.sleep(0.1)  # 設定間隔
     ocv = True       # 再開始程式
 
     # 建立執行緒
