@@ -9,6 +9,8 @@ from utils.timers import FPSBasedTimer
 
 import supervision as sv
 from detect import estimate_label
+import queue
+import copy
 
 
 def xyxy_to_xywh(box):
@@ -18,7 +20,7 @@ def xyxy_to_xywh(box):
     y_center = (y_min + y_max) / 2  # 中心點 y 座標
     w = x_max - x_min  # 寬度
     h = y_max - y_min  # 高度
-    return [x_center, y_center, w, h]
+    return [int(x_center), int(y_center), w, h]
 
 
 def img_crop(frame, xx1, yy1, ww, hh, zoom):
@@ -63,12 +65,41 @@ def main(source_video_path: str,
          classes: List[int],) -> None:
 
     model = YOLO(weights)  # 初始化 YOLOv8 模型
-    video_info = sv.VideoInfo.from_video_path(video_path=source_video_path)    # 取得視訊資訊(寬.高.fps.總影格數)
+    video_info = sv.VideoInfo.from_video_path(video_path=source_video_path)    # 取得視訊資訊
     tracker = sv.ByteTrack(frame_rate=video_info.fps, track_activation_threshold=confidence)  # 初始化 ByteTrack 物件
     frames_generator = sv.get_video_frames_generator(source_video_path)  # 取得一個產生視訊影格的生成器
 
+    width = video_info.width  # 取得影像寬度
+    height = video_info.height  # 取得影像高度
+    fps = video_info.fps  # 取得影像 fps
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 設定影片的格式為 mp4
+
+    q = queue.Queue()
+    q2 = queue.Queue()
+    start_pos = {}
+    end_pos = {}
+    recorded = {}
+
+    cur_id = {}
+
+    # 建立字典追蹤越線的車輛
+    car_crossed = {}
+    moto_crossed = {}
+
+    # 建立字典追蹤迴轉的車輛
+    wup = {}
+    wrongway = []
+
+    # 建立字典追蹤車輛位於線段哪一側
+    pre_side = {}
+    cur_side = {}
+
+    cur_frame = -1  # 經過影格數
+    crop_cnt = 0  # 已截圖數
+    crop_max = 0  # 截圖最大數
+
     vertex = load_zones_config(file_path=zone_configuration_path)  # 從 JSON 檔案載入座標配置
-    types = [1, 2, 3, 3, 4]  # 可以從 type_configuration_path 載入
+    types = load_zones_config(file_path=type_configuration_path)  # 1 紅綠燈, 2 車流線, 3 迴轉區, 4 臨停區
 
     # 定義違停區
     polygons = []
@@ -105,23 +136,10 @@ def main(source_video_path: str,
                 area2 = np.array(vertex[idx], np.int32)
             cnt += 1
 
-    # 建立字典追蹤越線的車輛
-    car_crossed = {}
-    moto_crossed = {}
-
-    # 建立字典追蹤迴轉的車輛
-    wup = {}
-    wrongway = []
-
-    # 建立字典追蹤車輛位於線段哪一側
-    pre_side = {}
-    cur_side = {}
-
-    frame_pos = 0  # 經過影格數
-    crop_cnt = 0  # 已截圖數
-    crop_max = 0  # 截圖最大數
-
     for frame in frames_generator:  # 提取影格
+        cur_time = round(cur_frame / video_info.fps, 1)
+        cur_frame += 1
+
         results = model(frame, verbose=False, device=device, conf=confidence)[0]  # 使用 YOLOv8 推理
         detections = sv.Detections.from_ultralytics(results)  # 根據 YOLOv8 推理結果建立檢測實例
         detections = detections[find_in_list(detections.class_id, classes)]  # 選擇僅屬於選定類別集的偵測
@@ -130,6 +148,7 @@ def main(source_video_path: str,
 
         # 建立此影格的副本
         annotated_frame = frame.copy()
+        annotated_frame2 = frame.copy()
 
         # 取得物件邊界框和軌跡ID
         boxes = detections.xyxy
@@ -146,22 +165,21 @@ def main(source_video_path: str,
                 h = vertex[idx][2][1].item() - vertex[idx][0][1].item()
                 light_img = img_crop(frame, x1, y1, w, h, 1)
                 light_img = cv2.cvtColor(light_img, cv2.COLOR_BGR2RGB)
-                light_type = estimate_label(light_img, frame_pos, False)
-
-        # 計時
-        cur_time = round(frame_pos / video_info.fps, 1)
-        frame_pos += 1
+                light_type = estimate_label(light_img, cur_frame, False)
 
         # 逐一偵測影格中物件
         for box, id, cls in zip(boxes, track_ids, track_clss):
+            if id not in start_pos:
+                start_pos[id] = cur_frame - 1
+
             x1, y1, x2, y2 = box.astype(int)
-            x_center, y_center, w, h = xyxy_to_xywh(box)
+            cx, cy, w, h = xyxy_to_xywh(box)
+            # cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 255), -1)
 
-            # 計算中心點
-            cx = int(x_center)
-            cy = int(y_center)
-
-            cv2.circle(annotated_frame, (cx, cy), 4, 	(255, 0, 255), -1)
+            cur_pos = [x1, y1, x2, y2]
+            if id not in cur_id:
+                cur_id[id] = []
+            cur_id[id].append([cur_pos, cur_frame])
 
             # 偵測物件是否在 area1 中
             if area1 is not None:
@@ -185,25 +203,10 @@ def main(source_video_path: str,
                 cur_side[id] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
                 if id in pre_side and cur_side[id] != pre_side[id]:
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
-
-                    if id not in car_crossed and cls == 1:  # 假設類別 1 是汽車
-                        car_crossed[id] = True
-                        if crop_cnt < crop_max:  # 限定截圖次數
-                            crop_img = img_crop(annotated_frame, x1, y1, w, h, zoom=1.5)
-                            filename = "save/" + str(cur_time) + 's_ID(' + str(id) + ').jpg'
-                            cv2.imwrite(filename, crop_img)
-                            crop_cnt += 1
-
-                    if id not in moto_crossed and cls == 2:  # 假設類別 2 是摩托車
-                        moto_crossed[id] = True
-                        if crop_cnt < crop_max:  # 限定截圖次數
-                            crop_img = img_crop(annotated_frame, x1, y1, w, h, zoom=3)
-                            filename = "save/" + str(cur_time) + 's_ID(' + str(id) + ').jpg'
-                            cv2.imwrite(filename, crop_img)
-                            crop_cnt += 1
+                    if id not in car_crossed and cls == 1:
+                        car_crossed[id] = [True, cur_frame, 0]
 
                 pre_side[id] = cur_side[id]
-
             # 離開線段範圍則不計入
             elif id in pre_side:
                 pre_side.pop(id)
@@ -211,24 +214,32 @@ def main(source_video_path: str,
         # 繪製線段
         if START and END:
             cv2.line(img=annotated_frame, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
+            cv2.line(img=annotated_frame2, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
+
+        q2.put(copy.deepcopy(annotated_frame2))
 
         # 繪製違停區域及標註違規車輛
         for idx, zone in enumerate(zones):
             annotated_frame = sv.draw_polygon(
                 scene=annotated_frame, polygon=zone.polygon, color=COLORS.by_idx(idx)
             )
+
             detections_in_zone = detections[zone.trigger(detections)]
             time_in_zone = timers[idx].tick(detections_in_zone)
             custom_color_lookup = np.full(detections_in_zone.class_id.shape, idx)
+
             annotated_frame = COLOR_ANNOTATOR.annotate(
                 scene=annotated_frame,
                 detections=detections_in_zone,
                 custom_color_lookup=custom_color_lookup,
             )
-            labels = [
-                f"#{id} {int(time // 60):02d}:{int((time % 60)):02d}"
-                for id, time in zip(detections_in_zone.tracker_id, time_in_zone)
-            ]
+
+            labels = []
+            for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
+                labels.append(f"#{id} {int(time // 60):02d}:{int((time % 60)):02d}")
+                if time > 10 and id not in end_pos:
+                    end_pos[id] = cur_frame
+
             annotated_frame = LABEL_ANNOTATOR.annotate(
                 scene=annotated_frame,
                 detections=detections_in_zone,
@@ -248,6 +259,50 @@ def main(source_video_path: str,
         cv2.putText(annotated_frame, f"Moto crossed: {len(moto_crossed)}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(annotated_frame, f"Time: {cur_time}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(annotated_frame, f"Light: {light_type}", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+        q.put(annotated_frame)
+
+        if end_pos:
+            for id, pos in end_pos.items():
+                if id not in recorded:
+                    out = cv2.VideoWriter(f"{cur_time}_{id}.mp4", fourcc, fps, (width, height))  # 產生空的影片
+                    q_list = list(q.queue)
+                    start = start_pos[id]
+                    end = pos
+                    for i in range(start, end):
+                        frame = q_list[i]
+                        out.write(frame)
+                    recorded[id] = True
+                    out.release()
+
+        if car_crossed:
+            for id in list(car_crossed):
+                q2_list = list(q2.queue)
+                img_list = []
+                car_crossed[id][2] += 1
+                delay = 15
+                if car_crossed[id][2] == delay:
+                    for i in [int(delay / -1.5 * 3), int(delay / -1.5 * 2), int(delay / -1.5), 0]:
+                        pos = cur_frame + i
+                        if 0 <= pos <= len(q2_list):
+                            index_map = {item[1]: idx for idx, item in enumerate(cur_id[id])}
+                            index = index_map.get(pos)
+                            if index is not None:
+                                x1, y1, x2, y2 = cur_id[id][index][0]
+                                cv2.rectangle(q2_list[pos], (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                cv2.putText(q2_list[pos], f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                            (36, 255, 12), 2)
+                            cv2.putText(q2_list[pos], f"{len(img_list) + 1}", (50, 200),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 5, (0, 255, 0), 8)
+                            img_list.append(q2_list[pos])
+                            if len(img_list) == 2:
+                                img_hor1 = cv2.hconcat([img_list[0], img_list[1]])
+                            elif len(img_list) == 4:
+                                img_hor2 = cv2.hconcat([img_list[2], img_list[3]])
+                                img_ver = cv2.vconcat([img_hor1, img_hor2])
+                                filename = "save/" + str(cur_frame) + '_id(' + str(id) + ').jpg'
+                                cv2.imwrite(filename, img_ver)
+                    car_crossed.pop(id)
 
         # 顯示繪製後畫面於視窗
         cv2.namedWindow("Processed Video", cv2.WINDOW_NORMAL)
@@ -276,7 +331,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source_video_path",
         type=str,
-        default="video/park2.mp4",
+        default="video/park.mp4",
         help="Path to the source video file.",
     )
     parser.add_argument(
