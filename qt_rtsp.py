@@ -315,30 +315,31 @@ class MainWindow(QtWidgets.QMainWindow):
                         scene=annotated_frame, polygon=zone.polygon, color=COLORS.by_idx(idx)
                     )  # 在場景上繪製多邊形
 
-                    detections_in_zone = detections[zone.trigger(detections)]  # 將檢測與 PolygonZone 結合使用來清除區域內外的邊界框
-                    time_in_zone = timers[idx].tick(detections_in_zone)  # 處理目前影格，更新每個追蹤器的持續時間
-                    custom_color_lookup = np.full(detections_in_zone.class_id.shape, idx)
-                    # 傳回給定形狀和類型的新陣列，並用 idx 填滿，用於定義將顏色對應到註解的策略的枚舉類別
+                    if track_ids.size != 0:
+                        detections_in_zone = detections[zone.trigger(detections)]  # 將檢測與 PolygonZone 結合使用來清除區域內外的邊界框
+                        time_in_zone = timers[idx].tick(detections_in_zone)  # 處理目前影格，更新每個追蹤器的持續時間
+                        custom_color_lookup = np.full(detections_in_zone.class_id.shape, idx)
+                        # 傳回給定形狀和類型的新陣列，並用 idx 填滿，用於定義將顏色對應到註解的策略的枚舉類別
 
-                    annotated_frame = COLOR_ANNOTATOR.annotate(
-                        scene=annotated_frame,
-                        detections=detections_in_zone,
-                        custom_color_lookup=custom_color_lookup,
-                    )  # 用顏色註解場景中區域
+                        annotated_frame = COLOR_ANNOTATOR.annotate(
+                            scene=annotated_frame,
+                            detections=detections_in_zone,
+                            custom_color_lookup=custom_color_lookup,
+                        )  # 用顏色註解場景中區域
 
-                    # 建立標籤 (將id.時間結合) (跳格處理因此時間需x2)
-                    labels = []
-                    for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
-                        labels.append(f"#{id} {int(time * 2 // 60):02d}:{int((time * 2 % 60)):02d}")
-                        if time * 2 > 10 and id not in end_pos:
-                            end_pos[id] = cur_frame
+                        # 建立標籤 (將id.時間結合) (跳格處理因此時間需x2)
+                        labels = []
+                        for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
+                            labels.append(f"#{id} {int(time * 2 // 60):02d}:{int((time * 2 % 60)):02d}")
+                            if time * 2 > 10 and id not in end_pos:
+                                end_pos[id] = cur_frame
 
-                    annotated_frame = LABEL_ANNOTATOR.annotate(
-                        scene=annotated_frame,
-                        detections=detections_in_zone,
-                        labels=labels,
-                        custom_color_lookup=custom_color_lookup,
-                    )  # 用標籤註解場景中區域
+                        annotated_frame = LABEL_ANNOTATOR.annotate(
+                            scene=annotated_frame,
+                            detections=detections_in_zone,
+                            labels=labels,
+                            custom_color_lookup=custom_color_lookup,
+                        )  # 用標籤註解場景中區域
 
                 # 繪製違規迴轉區域
                 if area1 is not None:
