@@ -70,7 +70,7 @@ def xyxy_to_xywh(box) -> list:
     y_center = (y_min + y_max) / 2  # 中心點 y 座標
     w = x_max - x_min  # 寬度
     h = y_max - y_min  # 高度
-    return [x_center, y_center, w, h]
+    return [int(x_center), int(y_center), w, h]
 
 
 def img_crop(frame, xx1, yy1, ww, hh, zoom) -> np.ndarray:
@@ -258,48 +258,49 @@ class MainWindow(QtWidgets.QMainWindow):
                         light_type = estimate_label(light_img, cur_frame, False)
 
                 # 逐一偵測影格中物件
-                for box, id, cls in zip(boxes, track_ids, track_cls):
-                    if id not in start_pos:
-                        start_pos[id] = cur_frame - 1
+                if track_ids.size != 0:
+                    for box, id, cls in zip(boxes, track_ids, track_cls):
+                        if id not in start_pos:
+                            start_pos[id] = cur_frame - 1
 
-                    x1, y1, x2, y2 = box.astype(int)
-                    cx, cy, w, h = xyxy_to_xywh(box)
-                    # cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 255), -1)
+                        x1, y1, x2, y2 = box.astype(int)
+                        cx, cy, w, h = xyxy_to_xywh(box)
+                        cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 255), -1)
 
-                    id_pos = [x1, y1, x2, y2]
-                    if id not in cur_id:
-                        cur_id[id] = []
-                    cur_id[id].append([id_pos, cur_frame])
+                        id_pos = [x1, y1, x2, y2]
+                        if id not in cur_id:
+                            cur_id[id] = []
+                        cur_id[id].append([id_pos, cur_frame])
 
-                    # 偵測物件是否在 area1 中
-                    if area1 is not None:
-                        result = cv2.pointPolygonTest(area1, (cx, cy), False)
-                        if result >= 0:
-                            wup[id] = (cx, cy)
+                        # 偵測物件是否在 area1 中
+                        if area1 is not None:
+                            result = cv2.pointPolygonTest(area1, (cx, cy), False)
+                            if result >= 0:
+                                wup[id] = (cx, cy)
 
-                    # 如果物件已經在 area1，檢查是否進入 area2
-                    if id in wup and area2 is not None:
-                        result1 = cv2.pointPolygonTest(area2, (cx, cy), False)
-                        if result1 >= 0:
-                            # 標註違規物件
-                            cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 0), -1)
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                            cv2.putText(annotated_frame, f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
-                            if id not in wrongway:
-                                wrongway.append(id)
+                        # 如果物件已經在 area1，檢查是否進入 area2
+                        if id in wup and area2 is not None:
+                            result1 = cv2.pointPolygonTest(area2, (cx, cy), False)
+                            if result1 >= 0:
+                                # 標註違規物件
+                                cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 0), -1)
+                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+                                cv2.putText(annotated_frame, f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                                if id not in wrongway:
+                                    wrongway.append(id)
 
-                    # 檢查物件是否越線（原始功能）
-                    if (START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y):
-                        cur_side[id] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
-                        if id in pre_side and cur_side[id] != pre_side[id]:
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
-                            if id not in car_crossed and cls == 1:
-                                car_crossed[id] = [True, cur_frame, 0]
+                        # 檢查物件是否越線（原始功能）
+                        if (START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y):
+                            cur_side[id] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
+                            if id in pre_side and cur_side[id] != pre_side[id]:
+                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                                if id not in car_crossed and cls == 1:
+                                    car_crossed[id] = [True, cur_frame, 0]
 
-                        pre_side[id] = cur_side[id]
-                    # 離開線段範圍則不計入
-                    elif id in pre_side:
-                        pre_side.pop(id)
+                            pre_side[id] = cur_side[id]
+                        # 離開線段範圍則不計入
+                        elif id in pre_side:
+                            pre_side.pop(id)
 
                 # 繪製線段
                 if START and END:
@@ -329,7 +330,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     labels = []
                     for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
                         labels.append(f"#{id} {int(time * 2 // 60):02d}:{int((time * 2 % 60)):02d}")
-                        if time * 2 > 5 and id not in end_pos:
+                        if time * 2 > 10 and id not in end_pos:
                             end_pos[id] = cur_frame
 
                     annotated_frame = LABEL_ANNOTATOR.annotate(

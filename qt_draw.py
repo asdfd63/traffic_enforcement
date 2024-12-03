@@ -211,7 +211,8 @@ class MainWindow(QtWidgets.QWidget):
         self.video_label.set_area_type(self.combo.currentIndex())
 
     def select_video(self):
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇影片檔案", "", "影片檔案 (*.mp4 *.avi *.mov)")
+        file_path = "rtsp://localhost:554/s"
+        # file_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇影片檔案", "", "影片檔案 (*.mp4 *.avi *.mov)")
         if file_path:
             self.video_label.set_file_path_text(file_path)
             self.load_video_frame(file_path)
