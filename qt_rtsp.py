@@ -233,7 +233,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 model: YOLO, tracker: any, zones: list, timers: list, fps: float, base_time: int):
         """處理並顯示影像"""
         global ocv
-        cur_frame = -1    # 經過影格數 (索引值)，進迴圈後加一使其從零開始
+        cur_frame = -1    # 經過影格數，進迴圈後加一使其從零開始
         offset = 0        # 影格索引向前位移量
         max_size = 200    # 佇列最大儲存量
         parking_time = 5  # 定義違停秒數
@@ -423,12 +423,12 @@ class MainWindow(QtWidgets.QMainWindow):
                             img_list = []             # 存放不同位置之圖片
                             car_crossed[id][2] += 1   # 通過停止線後經過影格數 +1
                             delay = 15                # 通過停止線後第 n 個影格開始往前記錄
-                            if car_crossed[id][2] == delay:
+                            if car_crossed[id][2] == delay and id in cur_id:
                                 for i in [int(delay / -1.5 * 3), int(delay / -1.5 * 2), int(delay / -1.5), 0]:
                                     # 在前面四個不同位置擷取影格
-                                    pos = cur_frame + i - offset  # 影格位置 (索引值)
+                                    pos = cur_frame + i - offset  # 影格索引值
                                     if 0 <= pos <= len(q1_list):  # 邊界檢查
-                                        index_map = {item[1]: idx for idx, item in enumerate(cur_id[id])}
+                                        index_map = {item[1]: idx for idx, item in enumerate(cur_id[id]) if len(item) > 1}
                                         index = index_map.get(pos + offset)
                                         if index is not None:
                                             x1, y1, x2, y2 = cur_id[id][index][0]
@@ -437,13 +437,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                         cv2.putText(q1_list[pos], f"{len(img_list) + 1}", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 5, (0, 255, 0), 8)
                                         img_list.append(q1_list[pos])
                                         if len(img_list) == 2:
-                                            # 上方左右水平拼接
-                                            img_hor1 = cv2.hconcat([img_list[0], img_list[1]])
+                                            img_hor1 = cv2.hconcat([img_list[0], img_list[1]])  # 上方左右水平拼接
                                         elif len(img_list) == 4:
-                                            # 下方左右水平拼接
-                                            img_hor2 = cv2.hconcat([img_list[2], img_list[3]])
-                                            # 上下方垂直拼接
-                                            img_ver = cv2.vconcat([img_hor1, img_hor2])
+                                            img_hor2 = cv2.hconcat([img_list[2], img_list[3]])  # 下方左右水平拼接
+                                            img_ver = cv2.vconcat([img_hor1, img_hor2])         # 上下方垂直拼接
                                             filename = f"save/{duration}_{id}.jpg"
                                             cv2.imwrite(filename, img_ver)  # 儲存圖片
                                 car_crossed.pop(id)  # 從紀錄移除
