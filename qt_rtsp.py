@@ -1,56 +1,56 @@
 import sys
-import time
+import time as time_module
+import psutil
+import cv2
+import numpy as np
+import supervision as sv
+import queue
+import threading
+import copy
+import logging
 
 from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import *
-
-import argparse
-from typing import List
-import cv2
-import numpy as np
 from ultralytics import YOLO
 from utils.general import find_in_list, load_zones_config
 from utils.timers import FPSBasedTimer
-import supervision as sv
+from typing import List
+from datetime import datetime
 from detect import estimate_label
-import queue
-import threading
-import copy
 
-COLORS = sv.ColorPalette.from_hex(["#E6194B", "#3CB44B", "#FFE119", "#3C76D1"])  # 建立調色盤
-COLOR_ANNOTATOR = sv.ColorAnnotator(color=COLORS)  # 建立顏色註解器
-LABEL_ANNOTATOR = sv.LabelAnnotator(
-    color=COLORS, text_color=sv.Color.from_hex("#000000")
-)  # 建立標籤註解器
+# 日誌配置
+LOG_FILE = "fail.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    filemode='w',       # 寫入模式，清空舊內容
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logging.info("Program started.")
 
-ocv = True     # 是否執行主程式
+COLORS = sv.ColorPalette.from_hex(["#E6194B", "#3CB44B", "#FFE119", "#3C76D1"])             # 建立調色盤
+COLOR_ANNOTATOR = sv.ColorAnnotator(color=COLORS)                                           # 建立顏色註解器
+LABEL_ANNOTATOR = sv.LabelAnnotator(color=COLORS, text_color=sv.Color.from_hex("#000000"))  # 建立標籤註解器
 
-q = queue.Queue()   # 建立佇列存放影格
-q1 = queue.Queue()
-q2 = queue.Queue()
-start_pos = {}
-end_pos = {}
-recorded = {}
-cur_id = {}
+ocv = False  # 是否進行辨識
 
-cur_time = 0   # 經過時間
-frame_pos = 0  # 經過影格數
-crop_cnt = 0   # 已截圖數
-crop_max = 0   # 截圖最大數
+# 建立佇列存放影格
+q = queue.Queue()   # 用於顯示畫面
+q1 = queue.Queue()  # 用於越線截圖
+q2 = queue.Queue()  # 用於違停錄影
 
-cur_frame = -1
-cur_time2 = 0
+cur_id = {}         # 記錄車輛資訊(id, 座標, 影格位置)
+start_pos = {}      # 記錄車輛首次進入區域之影格位置
+end_pos = {}        # 記錄車輛停留達到指定時間之影格位置
+recorded = {}       # 記錄此車輛是否完成錄影
 
-# 建立字典來追蹤越界的對象
-car_crossed = {}
-moto_crossed = {}
+wup = {}            # 記錄進入第一個區域車輛
+wrongway = []       # 記錄違規迴轉車輛
+car_crossed = {}    # 記錄越界車輛
 
-# 建立字典追蹤迴轉的車輛
-wup = {}
-wrongway = []
-
-# 建立字典追蹤車輛位於線段哪一側
+# 記錄車輛位於停止線哪一側
 pre_side = {}
 cur_side = {}
 
@@ -64,7 +64,7 @@ area2 = None
 
 
 def xyxy_to_xywh(box) -> list:
-    """ 轉換 [x1 y1 x2 y2] 為 [x y w h] 格式。 """
+    """轉換 [x1 y1 x2 y2] 為 [x y w h] 格式"""
     x_min, y_min, x_max, y_max = box  # 左上角 (x_min, y_min) 右下角 (x_max, y_max)
     x_center = (x_min + x_max) / 2  # 中心點 x 座標
     y_center = (y_min + y_max) / 2  # 中心點 y 座標
@@ -74,7 +74,7 @@ def xyxy_to_xywh(box) -> list:
 
 
 def img_crop(frame, xx1, yy1, ww, hh, zoom) -> np.ndarray:
-    """ 以倍率截圖 (xywh 格式) """
+    """以指定倍率截取圖片 (xywh 格式)"""
     x1 = int(xx1 - ww * (zoom - 1) / 2)
     y1 = int(yy1 - hh * (zoom - 1) / 2)
     w = int(ww * zoom)
@@ -83,7 +83,7 @@ def img_crop(frame, xx1, yy1, ww, hh, zoom) -> np.ndarray:
 
 
 def find_point_side(x1, y1, x2, y2, cx, cy) -> bool:
-    """ 判斷點位於線段的哪一側 """
+    """判斷點位於線段的哪一側"""
     # 計算斜率 m
     if x2 - x1 == 0:
         raise ValueError("兩點的x值相同，斜率不存在（垂直線）")
@@ -114,6 +114,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.confidence = 0.3
         self.iou = 0.7
         self.classes = []
+
+        self.receive_thread = None
+        self.display_thread = None
 
         self.init_ui()
 
@@ -188,301 +191,411 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn2.setFont(font)
 
     def resizeEvent(self, event):
-        """ 自適應視窗尺寸 """
+        """自適應視窗尺寸"""
         super().resizeEvent(event)
         self.window_w, self.window_h = event.size().width(), event.size().height()
         self.video.setGeometry(self.video_x, self.video_y, self.window_w, self.window_h)
 
     def closeEvent(self, event):
-        """ 關閉視窗結束執行主程式 """
-        global ocv
-        ocv = False
+        """關閉視窗結束執行主程式"""
+        self.stop()
+        logging.info("Window closed.")
 
     @staticmethod
-    def receive(rtsp_url: str, fps: float) -> None:
-        """ 讀取影格 """
-        global frame_pos, cur_time, ocv
-        print("\nStart receive")
+    def receive(rtsp_url: str):
+        """接收 RTSP 影像串流"""
+        logging.info("Receive thread started.")
+        try:
+            cap = cv2.VideoCapture(rtsp_url)  # 擷取串流影像
+            if not cap.isOpened():
+                logging.error("Failed to open RTSP stream.")
+                return
 
-        cap = cv2.VideoCapture(rtsp_url)  # 擷取串流影像
-        ret, frame = cap.read()  # 讀取首個影格
-        q.put(frame)  # 將影格放入佇列
-        while ret and ocv:  # 當串流進行中
-            cur_time = round(frame_pos / fps, 1)  # 計算經過秒數
-            frame_pos += 1  # 計算經過影格數
-            ret = cap.grab()  # 從視訊檔案或攝影機抓取下一影格，並在成功的情況下回傳 True
-            if frame_pos % 2 == 0:  # 跳幀處理
-                ret, image = cap.retrieve()  # 解碼並回傳下一個影格
-                q.put(image)  # 將影格放入佇列
+            logging.info("RTSP stream opened successfully.")
 
-        # 串流結束釋放資源
-        cap.release()
-        print("End receive")
+            ret, frame = cap.read()  # 讀取首個影格
+            q.put(frame)             # 將影格放入佇列
+            while ocv:
+                ret = cap.grab()  # 從視訊檔案或攝影機抓取下一影格，並在成功的情況下回傳 True
+                if not ret:       # 當串流停止
+                    logging.warning("Failed to retrieve frame. Stopping receive thread.")
+                    break
+                if cap.get(1) % 2 == 0:          # 跳幀處理
+                    ret, image = cap.retrieve()  # 解碼並回傳下一個影格
+                    q.put(image)                 # 將影格放入佇列
+
+            cap.release()  # 串流結束釋放資源
+            logging.info("Receive thread stopped.")
+        except Exception as e:
+            logging.error(f"Error in receive: {e}")
 
     def display(self, device: str, confidence: float, iou: float, classes: List[int],
-                model: YOLO, tracker: any, zones: list, timers: list, fps: float) -> None:
-        """ 接收影格處理後顯示 """
-        global cur_time, frame_pos, crop_cnt, crop_max, ocv, vertex, types, START, END, area1, area2, cur_frame, cur_time2
-        print("Start display")
+                model: YOLO, tracker: any, zones: list, timers: list, fps: float, base_time: int):
+        """處理並顯示影像"""
+        global ocv
+        cur_frame = -1    # 經過影格數 (索引值)，進迴圈後加一使其從零開始
+        offset = 0        # 影格索引向前位移量
+        max_size = 200    # 佇列最大儲存量
+        parking_time = 5  # 定義違停秒數
+        crossed_cnt = 0   # 越線車輛數
 
-        while ocv:  # 開始主程式
-            if not q.empty():  # 若佇列不為空
-                cur_frame += 1
-                cur_time2 = round(cur_frame / fps * 2, 1)
-                frame = q.get()  # 從佇列取出影格
-                results = model(frame, verbose=False, device=device, conf=confidence)[0]  # 使用 YOLOv8 推理
-                detections = sv.Detections.from_ultralytics(results)  # 根據 YOLOv8 推理結果建立檢測實例
-                detections = detections[find_in_list(detections.class_id, classes)]  # 選擇僅屬於選定類別集的偵測
-                detections = detections.with_nms(threshold=iou)  # 對檢測集執行非極大值抑制
-                detections = tracker.update_with_detections(detections)  # 使用提供的偵測更新追蹤器並回傳更新的偵測結果
+        if model is None:
+            # 錯誤：YOLO 模型未初始化
+            logging.error("YOLO model is not initialized. Exiting display thread.")
+            return
 
-                # 建立此影格的副本
-                annotated_frame = frame.copy()
-                annotated_frame2 = frame.copy()
+        logging.info("Display thread started.")
+        try:
+            while ocv:
+                if not q.empty():  # 若佇列不為空
+                    # 檢查可用記憶體
+                    memory_info = psutil.virtual_memory()
+                    available_memory = memory_info.available / (1024 ** 3)
+                    if available_memory < 0.1:
+                        # 警告：可用記憶體低於 0.1 GB，立即中斷運行
+                        self.label2.setText(f"The available memory is less than 0.1 GB")
+                        logging.warning(
+                            "The available memory is less than 0.1 GB, and the execution is automatically terminated.")
+                        self.stop()
 
-                # 取得物件邊界框和軌跡 ID
-                boxes = detections.xyxy
-                track_ids = detections.tracker_id
-                track_cls = detections.class_id
+                    # 超過限制大小後，移除佇列中最舊影格，其餘往前移動
+                    if q1.qsize() >= max_size:
+                        q1.get()
+                        q2.get()
+                        offset += 1
 
-                # 燈號檢測
-                light_type = "unknown"
-                for idx, cls in enumerate(types):
-                    if cls == 1:
-                        x1 = vertex[idx][0][0].item()
-                        y1 = vertex[idx][0][1].item()
-                        w = vertex[idx][2][0].item() - vertex[idx][0][0].item()
-                        h = vertex[idx][2][1].item() - vertex[idx][0][1].item()
-                        light_img = img_crop(frame, x1, y1, w, h, 1)
-                        light_img = cv2.cvtColor(light_img, cv2.COLOR_BGR2RGB)
-                        light_type = estimate_label(light_img, cur_frame, False)
+                    frame = q.get()  # 取出影格
 
-                # 逐一偵測影格中物件
-                if track_ids.size != 0:
-                    for box, id, cls in zip(boxes, track_ids, track_cls):
-                        if id not in start_pos:
-                            start_pos[id] = cur_frame - 1
+                    try:
+                        results = model(frame, verbose=False, device=device, conf=confidence)[0]      # 使用 YOLOv8 推理
+                        detections = sv.Detections.from_ultralytics(results)             # 根據 YOLOv8 推理結果建立檢測實例
+                        detections = detections[find_in_list(detections.class_id, classes)]    # 選擇僅屬於選定類別集的偵測
+                        detections = detections.with_nms(threshold=iou)                          # 對檢測集執行非極大值抑制
+                        detections = tracker.update_with_detections(detections)  # 使用提供的偵測更新追蹤器並回傳更新的偵測結果
+                    except Exception as e:
+                        logging.error(f"Error during YOLO inference: {e}")
+                        continue
 
-                        x1, y1, x2, y2 = box.astype(int)
-                        cx, cy, w, h = xyxy_to_xywh(box)
-                        cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 255), -1)
+                    cur_frame += 1                              # 經過影格數加一
+                    duration = round(cur_frame / fps * 2, 1)    # 經過秒數
+                    cur_sec = base_time + duration              # 實際時間 (秒數)
+                    cur_time = datetime.fromtimestamp(cur_sec)  # 實際時間 (完整)
+                    cur_time = cur_time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(cur_time.microsecond / 100000)}"  # 格式化時間
 
-                        id_pos = [x1, y1, x2, y2]
-                        if id not in cur_id:
-                            cur_id[id] = []
-                        cur_id[id].append([id_pos, cur_frame])
+                    # 建立影格副本用於標註
+                    annotated_frame = frame.copy()
+                    annotated_frame2 = frame.copy()
 
-                        # 偵測物件是否在 area1 中
-                        if area1 is not None:
-                            result = cv2.pointPolygonTest(area1, (cx, cy), False)
-                            if result >= 0:
-                                wup[id] = (cx, cy)
+                    # 取得此影格之物件邊界框, ID, 類別 (ndarray)
+                    boxes = detections.xyxy
+                    track_ids = detections.tracker_id
+                    track_cls = detections.class_id
 
-                        # 如果物件已經在 area1，檢查是否進入 area2
-                        if id in wup and area2 is not None:
-                            result1 = cv2.pointPolygonTest(area2, (cx, cy), False)
-                            if result1 >= 0:
-                                # 標註違規物件
-                                cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 0), -1)
-                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                                cv2.putText(annotated_frame, f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
-                                if id not in wrongway:
-                                    wrongway.append(id)
+                    # 燈號檢測
+                    light_type = "unknown"
+                    for idx, cls in enumerate(types):
+                        if cls == 1:
+                            # 左上座標
+                            x1 = vertex[idx][0][0].item()
+                            y1 = vertex[idx][0][1].item()
+                            # 右下座標
+                            x2 = vertex[idx][2][0].item()
+                            y2 = vertex[idx][2][1].item()
+                            w = x2 - x1  # 寬度
+                            h = y2 - y1  # 高度
+                            light_img = img_crop(frame, x1, y1, w, h, 1)                     # 擷取紅綠燈部分
+                            light_img = cv2.cvtColor(light_img, cv2.COLOR_BGR2RGB)                 # 轉換色彩空間
+                            light_type = estimate_label(light_img, cur_frame, False)        # 估計燈號
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)   # 標示紅綠燈
+                            cv2.rectangle(annotated_frame2, (x1, y1), (x2, y2), (255, 0, 255), 2)  # 標示紅綠燈
 
-                        # 檢查物件是否越線（原始功能）
-                        if (START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y):
-                            cur_side[id] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
-                            if id in pre_side and cur_side[id] != pre_side[id]:
-                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
-                                if id not in car_crossed and cls == 1:
-                                    car_crossed[id] = [True, cur_frame, 0]
+                    # 當物件列表不為空，逐一遍歷影格中物件
+                    if len(track_ids) > 0:
+                        for box, id, cls in zip(boxes, track_ids, track_cls):
+                            x1, y1, x2, y2 = box.astype(int)
+                            cx, cy, w, h = xyxy_to_xywh(box)
+                            cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 255), -1)
 
-                            pre_side[id] = cur_side[id]
-                        # 離開線段範圍則不計入
-                        elif id in pre_side:
-                            pre_side.pop(id)
+                            id_pos = [x1, y1, x2, y2]  # 物件在此影格之座標
+                            if id not in cur_id:
+                                cur_id[id] = []
+                            cur_id[id].append([id_pos, cur_frame])  # 加入座標及對應影格位置(索引)
 
-                # 繪製線段
-                if START and END:
-                    cv2.line(img=annotated_frame, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
-                    cv2.line(img=annotated_frame2, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
+                            # if len(cur_id) > 30:              # 限制大小
+                            #     min_key = min(cur_id.keys())  # 搜尋 key 最小的元素 (最舊資料)
+                            #     cur_id.pop(min_key)           # 從字典中移除
 
-                q2.put(copy.deepcopy(annotated_frame2))
+                            # 檢查違規迴轉
+                            # 偵測物件是否在 area1 中
+                            if area1 is not None:
+                                result = cv2.pointPolygonTest(area1, (cx, cy), False)
+                                if result >= 0:
+                                    wup[id] = (cx, cy)
 
-                # 繪製違停區域及標註違規車輛
-                for idx, zone in enumerate(zones):  # 將可迭代的對象（如列表、元組或字串）轉換為索引序列，同時列出資料和資料對應的索引值 (idx)
-                    annotated_frame = sv.draw_polygon(
-                        scene=annotated_frame, polygon=zone.polygon, color=COLORS.by_idx(idx)
-                    )  # 在場景上繪製多邊形
+                            # 如果物件已經在 area1，檢查是否進入 area2
+                            if id in wup and area2 is not None:
+                                result1 = cv2.pointPolygonTest(area2, (cx, cy), False)
+                                if result1 >= 0:
+                                    # 標註違規車輛
+                                    cv2.circle(annotated_frame, (cx, cy), 4, (255, 0, 0), -1)
+                                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+                                    cv2.putText(annotated_frame, f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                                    if id not in wrongway:
+                                        wrongway.append(id)
 
-                    if track_ids.size != 0:
-                        detections_in_zone = detections[zone.trigger(detections)]  # 將檢測與 PolygonZone 結合使用來清除區域內外的邊界框
-                        time_in_zone = timers[idx].tick(detections_in_zone)  # 處理目前影格，更新每個追蹤器的持續時間
-                        custom_color_lookup = np.full(detections_in_zone.class_id.shape, idx)
-                        # 傳回給定形狀和類型的新陣列，並用 idx 填滿，用於定義將顏色對應到註解的策略的枚舉類別
+                            # 檢查物件是否越線 (不分車種)
+                            if START and END and ((START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y)):
+                                cur_side[id] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
+                                if id in pre_side and cur_side[id] != pre_side[id]:
+                                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                                    if id not in car_crossed:
+                                        car_crossed[id] = [True, cur_frame, 0]
+                                        crossed_cnt += 1
+                                pre_side[id] = cur_side[id]
+                            # 離開線段範圍後移除
+                            elif id in pre_side:
+                                pre_side.pop(id)
 
-                        annotated_frame = COLOR_ANNOTATOR.annotate(
-                            scene=annotated_frame,
-                            detections=detections_in_zone,
-                            custom_color_lookup=custom_color_lookup,
-                        )  # 用顏色註解場景中區域
+                    # 繪製違規迴轉區域
+                    if area1 is not None:
+                        cv2.polylines(annotated_frame, [area1], True, (255, 255, 255), 2)
+                    if area2 is not None:
+                        cv2.polylines(annotated_frame, [area2], True, (255, 255, 255), 2)
 
-                        # 建立標籤 (將id.時間結合) (跳格處理因此時間需x2)
-                        labels = []
-                        for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
-                            labels.append(f"#{id} {int(time * 2 // 60):02d}:{int((time * 2 % 60)):02d}")
-                            if time * 2 > 10 and id not in end_pos:
-                                end_pos[id] = cur_frame
+                    # 繪製停止線
+                    if START and END:
+                        cv2.line(img=annotated_frame, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
+                        cv2.line(img=annotated_frame2, pt1=(START.x, START.y), pt2=(END.x, END.y), color=(0, 0, 255), thickness=2)
 
-                        annotated_frame = LABEL_ANNOTATOR.annotate(
-                            scene=annotated_frame,
-                            detections=detections_in_zone,
-                            labels=labels,
-                            custom_color_lookup=custom_color_lookup,
-                        )  # 用標籤註解場景中區域
+                    q1.put(copy.deepcopy(annotated_frame2))
 
-                # 繪製違規迴轉區域
-                if area1 is not None:
-                    cv2.polylines(annotated_frame, [area1], True, (255, 255, 255), 2)
-                if area2 is not None:
-                    cv2.polylines(annotated_frame, [area2], True, (255, 255, 255), 2)
+                    # 繪製違停區域及標註違規車輛
+                    for idx, zone in enumerate(zones):  # 將可迭代的對象（如列表、元組或字串）轉換為索引序列，同時列出資料和資料對應的索引值 (idx)
+                        annotated_frame = sv.draw_polygon(scene=annotated_frame, polygon=zone.polygon, color=COLORS.by_idx(idx))  # 在畫面上繪製多邊形
 
-                # 顯示統計資訊於畫面
-                cv2.putText(annotated_frame, f"Wrong-way Cars: {len(wrongway)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1,(255, 255, 255), 2)
-                cv2.putText(annotated_frame, f"Car crossed: {len(car_crossed)}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,(255, 255, 255), 2)
-                cv2.putText(annotated_frame, f"Moto crossed: {len(moto_crossed)}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX,1, (255, 255, 255), 2)
-                cv2.putText(annotated_frame, f"Time: {cur_time2}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255, 255, 255), 2)
-                cv2.putText(annotated_frame, f"Light: {light_type}", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 1,(255, 255, 255), 2)
+                        if len(track_ids) > 0:
+                            detections_in_zone = detections[zone.trigger(detections)]              # 將檢測與 PolygonZone 結合使用來清除區域內外的邊界框
+                            time_in_zone = timers[idx].tick(detections_in_zone)                    # 處理目前影格，更新每個追蹤器的持續時間
+                            custom_color_lookup = np.full(detections_in_zone.class_id.shape, idx)  # 傳回給定形狀和類型的新陣列，並用 idx 填滿，用於定義將顏色對應到註解的策略的枚舉類別
 
-                q1.put(copy.deepcopy(annotated_frame))
+                            # 用顏色註解場景中區域
+                            annotated_frame = COLOR_ANNOTATOR.annotate(
+                                scene=annotated_frame,
+                                detections=detections_in_zone,
+                                custom_color_lookup=custom_color_lookup,
+                            )
 
-                # 違停錄影
-                if end_pos:
-                    for id, pos in end_pos.items():
-                        if id not in recorded:
-                            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 設定影片的格式為 mp4
-                            out = cv2.VideoWriter(f"{cur_time}_{id}.mp4", fourcc, fps * 0.5, (1920, 1080))  # 產生空的影片
-                            q1_list = list(q1.queue)
-                            start = start_pos[id]
-                            end = pos
-                            for i in range(start, end):
-                                frame = q1_list[i]
-                                out.write(frame)
-                            recorded[id] = True
-                            out.release()
+                            # 建立標籤(ID, 時間)
+                            labels = []
+                            for id, time in zip(detections_in_zone.tracker_id, time_in_zone):
+                                real_time = time * 2  # 跳格處理因此實際時間為兩倍
+                                labels.append(f"#{id} {int(real_time // 60):02d}:{int((real_time % 60)):02d}")
+                                # 記錄車輛首次進入區域之影格位置
+                                if id not in start_pos:
+                                    start_pos[id] = cur_frame
+                                # 記錄車輛停留達到指定時間之影格位置
+                                if real_time > parking_time and id not in end_pos:
+                                    end_pos[id] = cur_frame
 
-                # 越線截圖
-                if car_crossed:
-                    for id in list(car_crossed):
-                        q2_list = list(q2.queue)
-                        img_list = []
-                        car_crossed[id][2] += 1
-                        delay = 15
-                        if car_crossed[id][2] == delay:
-                            for i in [int(delay / -1.5 * 3), int(delay / -1.5 * 2), int(delay / -1.5), 0]:
-                                pos = cur_frame + i
-                                if 0 <= pos <= len(q2_list):
-                                    index_map = {item[1]: idx for idx, item in enumerate(cur_id[id])}
-                                    index = index_map.get(pos)
-                                    if index is not None:
-                                        x1, y1, x2, y2 = cur_id[id][index][0]
-                                        cv2.rectangle(q2_list[pos], (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                        cv2.putText(q2_list[pos], f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
-                                    cv2.putText(q2_list[pos], f"{len(img_list) + 1}", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 5, (0, 255, 0), 8)
-                                    img_list.append(q2_list[pos])
-                                    if len(img_list) == 2:
-                                        img_hor1 = cv2.hconcat([img_list[0], img_list[1]])
-                                    elif len(img_list) == 4:
-                                        img_hor2 = cv2.hconcat([img_list[2], img_list[3]])
-                                        img_ver = cv2.vconcat([img_hor1, img_hor2])
-                                        filename = "save/" + str(cur_frame) + '_id(' + str(id) + ').jpg'
-                                        cv2.imwrite(filename, img_ver)
-                            car_crossed.pop(id)
+                            # 用標籤註解畫面中區域
+                            annotated_frame = LABEL_ANNOTATOR.annotate(
+                                scene=annotated_frame,
+                                detections=detections_in_zone,
+                                labels=labels,
+                                custom_color_lookup=custom_color_lookup,
+                            )
 
-                # 顯示統計資訊於視窗
-                self.label2.setText(f"Total crossed: {len(car_crossed) + len(moto_crossed)}")
-                self.label3.setText(f"Time: {cur_time2}s")
-                self.label4.setText(f"Light: {light_type}")
+                    # 顯示資訊於畫面
 
-                frame = cv2.resize(annotated_frame, (1280, 720))  # 改變影像尺寸
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 影像轉換成 RGB
-                height, width, channel = frame.shape  # 讀取影像尺寸和 channel 數量
-                bytesPerline = channel * width  # 設定 bytesPerline (用於轉換)
-                img = QImage(frame, width, height, bytesPerline, QImage.Format_RGB888)  # 轉換影像為 QImage，讓 PyQt5 可以讀取
-                self.video.setPixmap(QPixmap.fromImage(img))  # label 顯示影像
+                    cv2.putText(annotated_frame, f"Time: {cur_time}", (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+                    cv2.putText(annotated_frame, f"Sec: {duration} s", (10, 230), cv2.FONT_HERSHEY_SIMPLEX, 2,(255, 255, 255), 3)
+                    cv2.putText(annotated_frame, f"Light: {light_type}", (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+                    cv2.putText(annotated_frame, f"Car crossed: {crossed_cnt}", (10, 440), cv2.FONT_HERSHEY_SIMPLEX, 2,(255, 255, 255), 3)
+                    cv2.putText(annotated_frame, f"Wrong-way Cars: {len(wrongway)}", (10, 370), cv2.FONT_HERSHEY_SIMPLEX, 2,(255, 255, 255), 3)
 
-        print("End display")
+
+                    q2.put(copy.deepcopy(annotated_frame))
+
+                    # 越線截圖
+                    if car_crossed:
+                        for id in list(car_crossed):
+                            q1_list = list(q1.queue)  # queue 轉換為 list
+                            img_list = []             # 存放不同位置之圖片
+                            car_crossed[id][2] += 1   # 通過停止線後經過影格數 +1
+                            delay = 15                # 通過停止線後第 n 個影格開始往前記錄
+                            if car_crossed[id][2] == delay:
+                                for i in [int(delay / -1.5 * 3), int(delay / -1.5 * 2), int(delay / -1.5), 0]:
+                                    # 在前面四個不同位置擷取影格
+                                    pos = cur_frame + i - offset  # 影格位置 (索引值)
+                                    if 0 <= pos <= len(q1_list):  # 邊界檢查
+                                        index_map = {item[1]: idx for idx, item in enumerate(cur_id[id])}
+                                        index = index_map.get(pos + offset)
+                                        if index is not None:
+                                            x1, y1, x2, y2 = cur_id[id][index][0]
+                                            cv2.rectangle(q1_list[pos], (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                            cv2.putText(q1_list[pos], f'ID:{id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                                        cv2.putText(q1_list[pos], f"{len(img_list) + 1}", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 5, (0, 255, 0), 8)
+                                        img_list.append(q1_list[pos])
+                                        if len(img_list) == 2:
+                                            # 上方左右水平拼接
+                                            img_hor1 = cv2.hconcat([img_list[0], img_list[1]])
+                                        elif len(img_list) == 4:
+                                            # 下方左右水平拼接
+                                            img_hor2 = cv2.hconcat([img_list[2], img_list[3]])
+                                            # 上下方垂直拼接
+                                            img_ver = cv2.vconcat([img_hor1, img_hor2])
+                                            filename = f"save/{duration}_{id}.jpg"
+                                            cv2.imwrite(filename, img_ver)  # 儲存圖片
+                                car_crossed.pop(id)  # 從紀錄移除
+
+                    # 違停錄影
+                    if end_pos:
+                        for id, pos in end_pos.items():
+                            if id not in recorded:
+                                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 設定影片的格式為 mp4
+                                out = cv2.VideoWriter(f"{duration}_{id}.mp4", fourcc, fps * 0.5, (1920, 1080))  # 產生空影片
+                                q2_list = list(q2.queue)        # queue 轉換為 list
+                                start = start_pos[id] - offset  # 進入區域之影格位置
+                                end = pos - offset              # 確定違停之影格位置
+                                for i in range(start, end):     # 遍歷中間經過之影格
+                                    out.write(q2_list[i])       # 寫入影片
+                                recorded[id] = True             # 此車輛已完成錄影
+                                out.release()                   # 釋放資源
+
+                    # 顯示資訊於視窗
+                    self.label2.setText(f"RAM: {available_memory:.2f} GB")
+                    self.label3.setText(f"Sec: {duration} s")
+                    self.label4.setText(f"Frame: {cur_frame}")
+
+                    frame = cv2.resize(annotated_frame, (1280, 720))  # 調整影像尺寸
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)          # 影像轉換成 RGB
+                    height, width, channel = frame.shape                    # 讀取影像尺寸和 channel 數量
+                    bytes_per_line = channel * width                        # 設定 bytes_Per_line 用於轉換
+                    q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)  # 轉換影像為 QImage，使 PyQt5 可以讀取
+                    self.video.setPixmap(QPixmap.fromImage(q_image))        # label 顯示影像
+                else:
+                    time_module.sleep(0.01)  # 等待 0.01 秒
+            logging.info("Display thread stopped.")
+        except Exception as e:
+            logging.error(f"Error in display: {e}")
 
     def start(self):
-        """ 執行主程式 """
+        """初始化參數後執行程式"""
         global ocv, vertex, types, START, END, area1, area2
-        print("Start start")
+        logging.info("Program start button clicked.")
 
-        model = YOLO(self.weights)  # 初始化 YOLO 模型
-        cap = cv2.VideoCapture(self.rtsp_url)  # 擷取串流影像
-        fps = cap.get(cv2.CAP_PROP_FPS)  # 取得串流之 fps
-        tracker = sv.ByteTrack(frame_rate=round(fps), track_activation_threshold=self.confidence)  # 初始化 ByteTrack 物件
+        if ocv:
+            # 警告：程式已經在運作。忽略重複的啟動命令
+            logging.warning("Program is already running. Ignoring duplicate start command.")
+            return
 
-        vertex = load_zones_config(file_path=self.zone_configuration_path)  # 從 JSON 檔案載入多邊形區域配置
-        types = load_zones_config(file_path=self.type_configuration_path)   # 1 紅綠燈, 2 車流線, 3 迴轉區, 4 臨停區
+        try:
+            vertex = load_zones_config(file_path=self.zone_configuration_path)  # 從 JSON 檔案載入多邊形區域配置
+            types = load_zones_config(file_path=self.type_configuration_path)   # 代號：1 紅綠燈, 2 停止線, 3 迴轉區, 4 臨停區
 
-        # 定義違停區
-        polygons = []
-        for idx, cls in enumerate(types):
-            if cls == 4:
-                polygons.append(vertex[idx])
+            if not vertex or not types:
+                # 錯誤：無法載入 JSON 配置
+                self.label2.setText("Error: Failed to load JSON configuration.")
+                logging.error("Failed to load JSON configuration. Cannot proceed.")
+                return
 
-        zones = [
-            sv.PolygonZone(
-                polygon=polygon,  # 由形狀 (N, 2) 的 numpy 陣列表示的多邊形，包含點的 x、y 座標
-                triggering_anchors=(sv.Position.CENTER,),  # 位置列表，指定在決定檢測是否通過線計數器時要考慮的檢測邊界框的錨點。預設情況下，這包含檢測邊界框的四個角
-            )  # 建立類別用於在影格內定義多邊形區域以偵測物件
-            for polygon in polygons
-        ]
-        timers = [FPSBasedTimer(round(fps)) for _ in zones]  # 對每個區域使用指定的 fps 初始化 FPSBasedTimer 物件
+            try:
+                model = YOLO(self.weights)  # 初始化 YOLO 模型
+                logging.info(f"Loaded YOLO model from {self.weights}")
+            except Exception as e:
+                logging.error(f"Failed to load YOLO model: {e}")
+                self.label2.setText("Error: Failed to load YOLO model.")
+                return
 
-        # 定義線段
-        for idx, cls in enumerate(types):
-            if cls == 2:
-                START = sv.Point(vertex[idx][0][0].item(), vertex[idx][0][1].item())
-                END = sv.Point(vertex[idx][1][0].item(), vertex[idx][1][1].item())
+            ocv = True  # 開始辨識
 
-        # 新增區域 area1 和 area2，用於檢測違規迴轉行為
-        cnt = 1
-        for idx, cls in enumerate(types):
-            if cls == 3:  # 假設在配置中類別為 3 的是 area1 下一個是 area2
-                if cnt % 2:
-                    area1 = np.array(vertex[idx], np.int32)
-                else:
-                    area2 = np.array(vertex[idx], np.int32)
-                cnt += 1
+            cap = cv2.VideoCapture(self.rtsp_url)  # 擷取串流影像
+            if not cap.isOpened():
+                # 錯誤：開啟串流失敗
+                logging.error("Failed to open RTSP stream.")
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS)  # 取得串流之 fps
+            tracker = sv.ByteTrack(frame_rate=round(fps), track_activation_threshold=self.confidence)  # 初始化 ByteTrack 物件
+            cap.release()  # 釋放資源
 
-        ocv = False  # 先結束原來程式
-        time.sleep(0.1)  # 設定間隔
-        ocv = True  # 再開始程式
+            # 定義違停區
+            polygons = []
+            for idx, cls in enumerate(types):
+                if cls == 4:
+                    polygons.append(vertex[idx])
 
-        # 建立執行緒
-        p1 = threading.Thread(target=self.receive, args=(self.rtsp_url, fps,))
-        p2 = threading.Thread(target=self.display, args=(self.device, self.confidence, self.iou, self.classes,
-                                                         model, tracker, zones, timers, fps,))
-        # 啟用執行緒
-        p1.start()
-        p2.start()
+            # 定義違停區域以偵測停留之物件
+            zones = [
+                sv.PolygonZone(
+                    polygon=polygon,                           # 由形狀 (N, 2) 的 numpy 陣列表示的多邊形，包含點的 xy 座標
+                    triggering_anchors=(sv.Position.CENTER,),  # 位置列表，指定在決定檢測是否通過線計數器時要考慮的檢測邊界框的錨點。預設情況下，這包含檢測邊界框的四個角
+                )
+                for polygon in polygons
+            ]
 
-        # 主程式結束釋放資源
-        cap.release()
-        print("End start\n")
+            timers = [FPSBasedTimer(round(fps)) for _ in zones]  # 對每個區域使用指定的 fps 初始化計時器物件
 
-    @staticmethod
-    def stop():
-        """ 停止主程式 """
+            # 定義停止線
+            for idx, cls in enumerate(types):
+                if cls == 2:
+                    START = sv.Point(vertex[idx][0][0].item(), vertex[idx][0][1].item())
+                    END = sv.Point(vertex[idx][1][0].item(), vertex[idx][1][1].item())
+
+            # 定義區域 area1 和 area2，以檢測違規迴轉行為
+            area_cnt = 1
+            for idx, cls in enumerate(types):
+                if cls == 3:
+                    # 因迴轉區域成對，假設奇數個為 area1，偶數個為 area2
+                    if area_cnt % 2:
+                        area1 = np.array(vertex[idx], np.int32)
+                    else:
+                        area2 = np.array(vertex[idx], np.int32)
+                    area_cnt += 1
+
+            base_sec = int(datetime.now().timestamp())  # 記錄開始辨識之時間
+
+            # 多執行緒的目的是讓串流接收不阻塞主執行緒
+            # 守護執行緒 (Daemon Thread)：當主程式結束時，守護執行緒會自動結束，而非守護執行緒則會繼續執行，直到完成自己的任務
+
+            # 啟動接收執行緒
+            self.receive_thread = threading.Thread(target=self.receive, args=(self.rtsp_url,))
+            self.receive_thread.daemon = True
+            self.receive_thread.start()
+
+            # 啟動顯示執行緒
+            self.display_thread = threading.Thread(target=self.display, args=(self.device, self.confidence, self.iou, self.classes, model, tracker, zones, timers, fps, base_sec,))
+            self.display_thread.daemon = True
+            self.display_thread.start()
+
+            logging.info("Threads started.")
+        except Exception as e:
+            logging.error(f"Error in start: {e}")
+
+    def stop(self):
+        """停止程式"""
         global ocv
-        ocv = False
-        print("stop\n")
+        if not ocv:
+            # 警告：程式沒有運行。忽略停止命令。
+            logging.warning("Program is not running. Ignoring stop command.")
+            return
+
+        ocv = False  # 停止辨識
+        logging.info("Program stopped by user.")
+
+        # 檢查並處理執行緒的狀態，確保所有正在運行的執行緒能夠在應用程式關閉之前被安全地處理
+        if self.receive_thread and self.receive_thread.is_alive():
+            self.receive_thread.join(timeout=1)
+        if self.display_thread and self.display_thread.is_alive():
+            self.display_thread.join(timeout=1)
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    # 若程式是直接執行，而非被其他模組匯入，則啟動以下程式
+    try:
+        app = QApplication(sys.argv)
+        window = MainWindow()
+        window.show()
+        logging.info("Qt application started.")
+        sys.exit(app.exec_())
+    except Exception as e:
+        logging.error(f"Unhandled exception: {e}")

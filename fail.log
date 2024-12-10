@@ -1,0 +1,15 @@
+2024-12-10 23:15:11 [INFO] Program started.
+2024-12-10 23:15:12 [INFO] Qt application started.
+2024-12-10 23:15:18 [INFO] Program start button clicked.
+2024-12-10 23:15:18 [INFO] Loaded YOLO model from best.pt
+2024-12-10 23:15:20 [INFO] Receive thread started.
+2024-12-10 23:15:20 [INFO] Display thread started.
+2024-12-10 23:15:20 [INFO] Threads started.
+2024-12-10 23:15:24 [INFO] RTSP stream opened successfully.
+2024-12-10 23:17:29 [WARNING] The available memory is less than 0.1 GB, and the execution is automatically terminated.
+2024-12-10 23:17:29 [INFO] Program stopped by user.
+2024-12-10 23:17:29 [INFO] Receive thread stopped.
+2024-12-10 23:17:29 [ERROR] Error in display: cannot join current thread
+2024-12-10 23:17:33 [WARNING] Program is not running. Ignoring stop command.
+2024-12-10 23:18:38 [WARNING] Program is not running. Ignoring stop command.
+2024-12-10 23:18:38 [INFO] Window closed.

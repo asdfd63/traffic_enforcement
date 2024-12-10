@@ -33,16 +33,16 @@ class VideoLabel(QtWidgets.QLabel):
     def __init__(self, parent=None):
         super(VideoLabel, self).__init__(parent)
         self.pixmap = None
-        self.polygons = [[]]  # 當前區域座標
-        self.colors = []  # 每個區域的顏色
-        self.types = []  # 每個區域的類型
+        self.polygons = [[]]
+        self.colors = []
+        self.types = []
         self.current_mouse_position = None
         self.hint_text = ''
         self.file_path_text = ''
         self.status_text = ''
-        self.current_type = 0  # 預設類型為 0
+        self.current_type = 0
         self.setMouseTracking(True)
-        self.setScaledContents(False)  # 設置為 False，避免拉伸圖像
+        self.setScaledContents(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setStyleSheet('border: 1px solid #f5f5f5')
 
@@ -53,7 +53,7 @@ class VideoLabel(QtWidgets.QLabel):
     def set_pixmap(self, pixmap):
         self.pixmap = pixmap
         self.setPixmap(self.pixmap)
-        self.resize(self.pixmap.size())  # 動態調整 QLabel 大小
+        self.resize(self.pixmap.size())
 
     def set_area_type(self, area_type):
         self.current_type = area_type
@@ -70,13 +70,29 @@ class VideoLabel(QtWidgets.QLabel):
         self.status_text = text
         self.update_drawing()
 
+    def map_to_original_coordinates(self, x, y):
+        if not self.pixmap:
+            return x, y
+
+        current_width = self.width()
+        current_height = self.height()
+        original_width = self.pixmap.width()
+        original_height = self.pixmap.height()
+
+        scale_x = original_width / current_width
+        scale_y = original_height / current_height
+
+        original_x = int(x * scale_x)
+        original_y = int(y * scale_y)
+        return original_x, original_y
+
     def mousePressEvent(self, event):
-        if self.current_type == 0:  # 當選擇 "無" 時，直接返回
+        if self.current_type == 0:
             self.set_hint_text("無操作")
             return
 
         if event.button() == QtCore.Qt.LeftButton and self.pixmap:
-            x, y = event.x(), event.y()
+            x, y = self.map_to_original_coordinates(event.x(), event.y())
             self.polygons[-1].append([x, y])
             self.current_mouse_position = None
             self.update_drawing()
@@ -84,28 +100,30 @@ class VideoLabel(QtWidgets.QLabel):
             self.complete_polygon()
 
     def mouseMoveEvent(self, event):
-        if self.current_type == 0:  # 當選擇 "無" 時，忽略滑鼠移動事件
+        if self.current_type == 0:
             self.set_hint_text("無操作")
             return
 
         if self.pixmap:
-            self.current_mouse_position = (event.x(), event.y())
-            self.update_drawing()  # 滑鼠移動時即時更新畫面
+            x, y = self.map_to_original_coordinates(event.x(), event.y())
+            self.current_mouse_position = (x, y)
+            self.update_drawing()
         self.set_hint_text(f'滑鼠座標: {event.x()}, {event.y()}')
 
     def keyPressEvent(self, event):
-        if event.key() == QtCore.Qt.Key_Escape:  # 按 Esc 鍵重新開始繪製
+        if event.key() == QtCore.Qt.Key_Escape:
             self.reset_drawing()
 
     def reset_drawing(self):
-        self.polygons = [[]]
-        self.colors = []
-        self.types = []
-        self.set_hint_text("已重置繪製區域")
+        if self.polygons and self.polygons[-1]:  # 如果有未完成的線段，清除它
+            self.polygons[-1] = []
+            self.set_hint_text("已清除當前線段")
+        else:
+            self.set_hint_text("無線段可清除")
         self.update_drawing()
 
     def complete_polygon(self):
-        if self.current_type == 0:  # 當選擇 "無" 時，忽略完成多邊形操作
+        if self.current_type == 0:
             return
 
         if self.polygons[-1]:
@@ -123,7 +141,6 @@ class VideoLabel(QtWidgets.QLabel):
         temp_pixmap = self.pixmap.copy()
         painter = QPainter(temp_pixmap)
 
-        # 繪製多邊形
         for idx, polygon in enumerate(self.polygons):
             color = self.colors[idx] if idx < len(self.colors) else QtCore.Qt.white
             pen = QPen(color, 3, QtCore.Qt.SolidLine)
@@ -146,7 +163,6 @@ class VideoLabel(QtWidgets.QLabel):
                 current_point = QtCore.QPointF(self.current_mouse_position[0], self.current_mouse_position[1])
                 painter.drawLine(last_point, current_point)
 
-        # 繪製檔案路徑、狀態提示和滑鼠提示文字
         if self.file_path_text:
             painter.setPen(QtGui.QColor('yellow'))
             painter.drawText(10, 30, f"檔案位置: {self.file_path_text}")
@@ -161,6 +177,10 @@ class VideoLabel(QtWidgets.QLabel):
 
         painter.end()
         self.setPixmap(temp_pixmap)
+
+    def resizeEvent(self, event):
+        super(VideoLabel, self).resizeEvent(event)
+        self.update_drawing()
 
 
 class MainWindow(QtWidgets.QWidget):
@@ -198,8 +218,8 @@ class MainWindow(QtWidgets.QWidget):
     def create_scrollable_video_area(self):
         self.video_label = VideoLabel()
         scroll_area = QtWidgets.QScrollArea()
-        scroll_area.setWidget(self.video_label)  # 設置 VideoLabel 作為滾動內容
-        scroll_area.setWidgetResizable(True)  # 允許滾動內容自適應大小
+        scroll_area.setWidget(self.video_label)
+        scroll_area.setWidgetResizable(True)
         self.main_layout.addWidget(scroll_area)
 
     def update_status_message(self):
@@ -211,14 +231,13 @@ class MainWindow(QtWidgets.QWidget):
         self.video_label.set_area_type(self.combo.currentIndex())
 
     def select_video(self):
-        file_path = "rtsp://localhost:554/s"
         # file_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇影片檔案", "", "影片檔案 (*.mp4 *.avi *.mov)")
-        if file_path:
-            self.video_label.set_file_path_text(file_path)
-            self.load_video_frame(file_path)
+        rtsp_url = "rtsp://localhost:554/s"
+        self.video_label.set_file_path_text(rtsp_url)
+        self.load_video_frame(rtsp_url)
 
-    def load_video_frame(self, file_path):
-        cap = cv2.VideoCapture(file_path)
+    def load_video_frame(self, rtsp_url):
+        cap = cv2.VideoCapture(rtsp_url)
         ret, frame = cap.read()
         if ret:
             height, width, _ = frame.shape
