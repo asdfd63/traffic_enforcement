@@ -1,5 +1,9 @@
 需加入 best.pt 和 save 資料夾
 
+需安裝並建立 MongoDB 套件及資料庫
+指令：pip install pymongo
+下載：https://www.mongodb.com/try/download/community-kubernetes-operator
+
 即時路口影像
 https://atis.ntpc.gov.tw//ATIS/ShowFrame4CCTV/C000053
 https://atis.ntpc.gov.tw//ATIS/ShowFrame4CCTV/C000420
