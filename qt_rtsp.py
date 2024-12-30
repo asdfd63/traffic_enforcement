@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import *
 from ultralytics import YOLO
 from utils.general import find_in_list, load_zones_config
 from utils.timers import FPSBasedTimer
-from typing import List
 from datetime import datetime
 from detect import estimate_label
 
@@ -38,7 +37,6 @@ LABEL_ANNOTATOR = sv.LabelAnnotator(color=COLORS, text_color=sv.Color.from_hex("
 
 ocv = False        # 是否進行辨識
 cur_frame = -1     # 經過影格數，進迴圈後加一使其從零開始
-interval = 7       # 採樣間隔
 
 # 連結 mongoDB 資料庫
 myclient = pymongo.MongoClient("mongodb://localhost:27017/")
@@ -78,7 +76,7 @@ END = None
 area1 = None
 area2 = None
 
-# 參數設定 (預設)
+# 預設參數
 zone_configuration_path = "1_zone.json"
 type_configuration_path = "1_type.json"
 rtsp_url = "rtsp://localhost:554/s"
@@ -87,9 +85,11 @@ device = "cuda"
 confidence = 0.3
 iou = 0.7
 classes = []
+interval = 7       # 採樣間隔
+parking_time = 10  # 定義違停秒數
 
 
-def xyxy_to_xywh(box) -> list:
+def xyxy_to_xywh(box):
     """轉換 [x1 y1 x2 y2] 為 [x y w h] 格式"""
     x_min, y_min, x_max, y_max = box  # 左上角 (x_min, y_min) 右下角 (x_max, y_max)
     x_center = (x_min + x_max) / 2  # 中心點 x 座標
@@ -99,7 +99,7 @@ def xyxy_to_xywh(box) -> list:
     return [int(x_center), int(y_center), w, h]
 
 
-def img_crop(frame, xx1, yy1, ww, hh, zoom) -> np.ndarray:
+def img_crop(frame, xx1, yy1, ww, hh, zoom):
     """以指定倍率截取圖片 (xywh 格式)"""
     x1 = int(xx1 - ww * (zoom - 1) / 2)
     y1 = int(yy1 - hh * (zoom - 1) / 2)
@@ -108,7 +108,7 @@ def img_crop(frame, xx1, yy1, ww, hh, zoom) -> np.ndarray:
     return frame[y1:y1 + h, x1:x1 + w]
 
 
-def find_point_side(x1, y1, x2, y2, cx, cy) -> bool:
+def find_point_side(x1, y1, x2, y2, cx, cy):
     """判斷點位於線段的哪一側"""
     # 計算斜率 m
     if x2 - x1 == 0:
@@ -130,101 +130,175 @@ class SettingsWindow(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle('settings')  # 設定視窗標題
-        self.setGeometry(100, 120, 180, 250)
+        self.setWindowTitle('參數設定')
+        self.setGeometry(100, 120, 385, 465)
         self.create_label()
         self.create_button()
         self.create_lineedit()
         self.create_combobox()
 
     def create_label(self):
+        font = QtGui.QFont("微軟正黑體", 14)
+
         self.label1 = QtWidgets.QLabel(self)
-        self.label1.setGeometry(10, 130, 30, 20)
-        self.label1.setText("url")
+        self.label1.setGeometry(15, 10, 150, 40)
+        self.label1.setText("區域類別")
+        self.label1.setFont(font)
 
         self.label2 = QtWidgets.QLabel(self)
-        self.label2.setGeometry(10, 170, 50, 20)
-        self.label2.setText("device")
+        self.label2.setGeometry(15, 60, 150, 40)
+        self.label2.setText("區域座標")
+        self.label2.setFont(font)
 
         self.label3 = QtWidgets.QLabel(self)
-        self.label3.setGeometry(10, 210, 80, 20)
-        self.label3.setText("confidence")
+        self.label3.setGeometry(15, 110, 150, 40)
+        self.label3.setText("預訓練模型")
+        self.label3.setFont(font)
 
         self.label4 = QtWidgets.QLabel(self)
-        self.label4.setGeometry(115, 210, 80, 20)
-        self.label4.setText("iou")
+        self.label4.setGeometry(15, 160, 150, 40)
+        self.label4.setText("監測站位址")
+        self.label4.setFont(font)
+
+        self.label5 = QtWidgets.QLabel(self)
+        self.label5.setGeometry(15, 210, 150, 40)
+        self.label5.setText("使用裝置")
+        self.label5.setFont(font)
+
+        self.label6 = QtWidgets.QLabel(self)
+        self.label6.setGeometry(15, 260, 150, 40)
+        self.label6.setText("置信度閾值")
+        self.label6.setFont(font)
+
+        self.label7 = QtWidgets.QLabel(self)
+        self.label7.setGeometry(15, 310, 150, 40)
+        self.label7.setText("iou 閾值")
+        self.label7.setFont(font)
+
+        self.label8 = QtWidgets.QLabel(self)
+        self.label8.setGeometry(15, 360, 150, 40)
+        self.label8.setText("影格採樣間隔")
+        self.label8.setFont(font)
+
+        self.label9 = QtWidgets.QLabel(self)
+        self.label9.setGeometry(15, 410, 150, 40)
+        self.label9.setText("違停記錄秒數")
+        self.label9.setFont(font)
 
     def create_button(self):
+        font = QtGui.QFont("微軟正黑體", 14)
+
         self.btn1 = QtWidgets.QPushButton(self)
-        self.btn1.setText('Select Type configuration')
-        self.btn1.setGeometry(10, 10, 160, 30)
-        self.btn1.clicked.connect(self.select_type_json)
+        self.btn1.setGeometry(165, 10, 205, 40)
+        self.btn1.setText('選擇配置')
+        self.btn1.setFont(font)
+        self.btn1.clicked.connect(lambda: self.select(1))
 
         self.btn2 = QtWidgets.QPushButton(self)
-        self.btn2.setText('Select Zone configuration')
-        self.btn2.setGeometry(10, 50, 160, 30)
-        self.btn2.clicked.connect(self.select_zone_json)
+        self.btn2.setGeometry(165, 60, 205, 40)
+        self.btn2.setText('選擇配置')
+        self.btn2.setFont(font)
+        self.btn2.clicked.connect(lambda: self.select(2))
 
         self.btn3 = QtWidgets.QPushButton(self)
-        self.btn3.setText('Select Model')
-        self.btn3.setGeometry(10, 90, 160, 30)
-        self.btn3.clicked.connect(self.select_model)
+        self.btn3.setGeometry(165, 110, 205, 40)
+        self.btn3.setText('選擇配置')
+        self.btn3.setFont(font)
+        self.btn3.clicked.connect(lambda: self.select(3))
 
     def create_lineedit(self):
         """建立單行輸入框"""
+        font = QtGui.QFont("Calibri", 12)
+
         self.input1 = QtWidgets.QLineEdit(self)
-        self.input1.setGeometry(35, 130, 135, 20)
+        self.input1.setGeometry(165, 160, 205, 40)
         self.input1.setText('rtsp://localhost:554/s')
-        self.input1.textChanged.connect(self.save_url)
+        self.input1.setFont(font)
+        self.input1.textChanged.connect(lambda: self.save(1))  # rtsp_url
 
         self.input2 = QtWidgets.QLineEdit(self)
-        self.input2.setGeometry(80, 210, 30, 20)
+        self.input2.setGeometry(165, 260, 205, 40)
         self.input2.setText('0.7')
-        self.input2.textChanged.connect(self.save_confidence)
+        self.input2.setFont(font)
+        self.input2.textChanged.connect(lambda: self.save(2))  # confidence
 
         self.input3 = QtWidgets.QLineEdit(self)
-        self.input3.setGeometry(140, 210, 30, 20)
+        self.input3.setGeometry(165, 310, 205, 40)
         self.input3.setText('0.3')
-        self.input3.textChanged.connect(self.save_iou)
+        self.input3.setFont(font)
+        self.input3.textChanged.connect(lambda: self.save(3))  # iou
+
+        self.input4 = QtWidgets.QLineEdit(self)
+        self.input4.setGeometry(165, 360, 205, 40)
+        self.input4.setText('7')
+        self.input4.setFont(font)
+        self.input4.textChanged.connect(lambda: self.save(4))  # interval
+
+        self.input5 = QtWidgets.QLineEdit(self)
+        self.input5.setGeometry(165, 410, 205, 40)
+        self.input5.setText('10')
+        self.input5.setFont(font)
+        self.input5.textChanged.connect(lambda: self.save(5))  # parking_time
 
     def create_combobox(self):
         """建立下拉選單"""
+        font = QtGui.QFont("微軟正黑體", 12)
+
         self.box = QtWidgets.QComboBox(self)
-        self.box.addItems(['cuda', 'cpu'])
-        self.box.setGeometry(50, 170, 120, 20)
-        self.box.setCurrentText('cuda')
-        self.box.currentIndexChanged.connect(self.save_device)
+        self.box.setGeometry(165, 210, 205, 40)
+        self.box.addItems(['顯示卡', '處理器'])
+        self.box.setCurrentText('顯示卡')
+        self.box.setFont(font)
+        self.box.currentIndexChanged.connect(lambda: self.save(6))
 
-    @staticmethod
-    def select_zone_json():
-        global zone_configuration_path
-        zone_configuration_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇區域座標配置", "", "JSON (*.json)")
+    def select(self, n):
+        global type_configuration_path, zone_configuration_path, weights
+        file_name = []
+        if n == 1:
+            type_configuration_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇區域座標配置", "", "JSON (*.json)")
+            if type_configuration_path != "":
+                for i in reversed(type_configuration_path):
+                    if i == '/' or i == '\\':
+                        break
+                    file_name.insert(0, i)
+                file_name = ''.join(file_name)
+                self.btn1.setText(file_name)
+        elif n == 2:
+            zone_configuration_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇區域類別配置", "", "JSON (*.json)")
+            if zone_configuration_path != "":
+                for i in reversed(zone_configuration_path):
+                    if i == '/' or i == '\\':
+                        break
+                    file_name.insert(0, i)
+                file_name = ''.join(file_name)
+                self.btn2.setText(file_name)
+        elif n == 3:
+            weights, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇模型", "", "PT (*.pt)")
+            if weights != "":
+                for i in reversed(weights):
+                    if i == '/' or i == '\\':
+                        break
+                    file_name.insert(0, i)
+                file_name = ''.join(file_name)
+                self.btn3.setText(file_name)
 
-    @staticmethod
-    def select_type_json():
-        global type_configuration_path
-        type_configuration_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇區域類別配置", "", "JSON (*.json)")
-
-    @staticmethod
-    def select_model():
-        global weights
-        weights, _ = QtWidgets.QFileDialog.getOpenFileName(None, "選擇模型", "", "PT (*.pt)")
-
-    def save_url(self):
-        global rtsp_url
-        rtsp_url = self.input.text()
-
-    def save_device(self):
-        global device
-        device = self.box.currentText()
-
-    def save_confidence(self):
-        global confidence
-        confidence = self.input.text()
-
-    def save_iou(self):
-        global iou
-        iou = self.input.text()
+    def save(self, n):
+        global rtsp_url, confidence, iou, interval, parking_time, device
+        if n == 1:
+            rtsp_url = self.input1.text()
+        elif n == 2:
+            confidence = self.input2.text()
+        elif n == 3:
+            iou = self.input3.text()
+        elif n == 4:
+            interval = self.input4.text()
+        elif n == 5:
+            parking_time = self.input5.text()
+        elif n == 6:
+            if self.box.currentText() == '顯示卡':
+                device = 'cuda'
+            elif self.box.currentText() == '處理器':
+                device = 'cpu'
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -241,7 +315,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle('qt_main')  # 設定視窗標題
+        self.setWindowTitle('違規監測')  # 設定視窗標題
         self.resize(self.window_w, self.window_h)
         self.create_menu()
         self.create_label()
@@ -253,25 +327,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menubar = QtWidgets.QMenuBar(self)
 
         # 創建 File 菜單
-        self.menu_file = QtWidgets.QMenu('File')
+        self.menu_file = QtWidgets.QMenu('選單')
 
         # 創建 settings 動作
-        self.action_settings = QtWidgets.QAction('Settings')
+        self.action_settings = QtWidgets.QAction('設定')
         self.action_settings.triggered.connect(self.settings)
         self.menu_file.addAction(self.action_settings)
 
         # 創建 start 動作
-        self.action_start = QtWidgets.QAction('Start')
+        self.action_start = QtWidgets.QAction('開始')
         self.action_start.triggered.connect(self.start)
         self.menu_file.addAction(self.action_start)
 
         # 創建 stop 動作
-        self.action_stop = QtWidgets.QAction('Stop')
+        self.action_stop = QtWidgets.QAction('停止')
         self.action_stop.triggered.connect(self.stop)
         self.menu_file.addAction(self.action_stop)
 
         # 創建 Close 動作
-        self.action_close = QtWidgets.QAction('Close')
+        self.action_close = QtWidgets.QAction('關閉')
         self.action_close.triggered.connect(QtWidgets.QApplication.instance().quit)
         self.menu_file.addAction(self.action_close)
 
@@ -281,6 +355,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def create_label(self):
         self.video = QtWidgets.QLabel(self)  # 放入 QLabel 用於顯示執行結果
         self.video.setGeometry(self.video_x, self.video_y, self.window_w, self.window_h)
+
+        self.label1 = QtWidgets.QLabel(self)
+        self.label1.setGeometry(810, 585, 1500, 400)
+        self.label1.setText("偵測結果")
 
         self.label2 = QtWidgets.QLabel(self)
         self.label2.setGeometry(400, 650, 1500, 400)
@@ -292,16 +370,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.label4.setGeometry(400, 750, 1500, 400)
 
         self.label5 = QtWidgets.QLabel(self)
-        self.label5.setGeometry(800, 650, 1500, 400)
+        self.label5.setGeometry(810, 650, 1500, 400)
 
         self.label6 = QtWidgets.QLabel(self)
-        self.label6.setGeometry(800, 700, 1500, 400)
+        self.label6.setGeometry(810, 700, 1500, 400)
 
         self.label7 = QtWidgets.QLabel(self)
-        self.label7.setGeometry(800, 750, 1500, 400)
-        font = QtGui.QFont()  # 加入文字設定
-        font.setPointSize(20)  # 設定文字大小
+        self.label7.setGeometry(810, 750, 1500, 400)
+
+        font = QtGui.QFont("微軟正黑體", 20)  # 加入文字設定
         # label 套用文字設定
+        self.label1.setFont(font)
         self.label2.setFont(font)
         self.label3.setFont(font)
         self.label4.setFont(font)
@@ -312,18 +391,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def create_button(self):
         # 放入按鈕 1 並設定參數
         self.btn1 = QtWidgets.QPushButton(self)
-        self.btn1.setText('start')
-        self.btn1.setGeometry(400, 750, 100, 60)  # self.btn1.setGeometry(50, 850, 100, 60)
+        self.btn1.setText('Start')
+        self.btn1.setGeometry(400, 750, 100, 60)
         self.btn1.clicked.connect(self.start)  # 點擊按鈕執行 start 函式
 
         # 放入按鈕 2 並設定參數
         self.btn2 = QtWidgets.QPushButton(self)
-        self.btn2.setText('stop')
-        self.btn2.setGeometry(510, 750, 100, 60)  # self.btn2.setGeometry(160, 850, 100, 60)
+        self.btn2.setText('Stop')
+        self.btn2.setGeometry(510, 750, 100, 60)
         self.btn2.clicked.connect(self.stop)  # 點擊按鈕執行 end 函式
 
-        font = QtGui.QFont()  # 加入文字設定
-        font.setPointSize(20)  # 設定文字大小
+        font = QtGui.QFont("Calibri", 20)  # 加入文字設定
         self.btn1.setFont(font)
         self.btn2.setFont(font)
 
@@ -383,13 +461,12 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             logging.error(f"Error in receive: {e}")
 
-    def display(self, model: YOLO, tracker: any, zones: list, timers: list, fps: float):
+    def display(self, model, tracker, zones, timers, fps):
         """處理並顯示影像"""
         global ocv, cur_frame
-        parking_time = 10  # 定義違停秒數
-        offset = 0         # 當前影格索引向前位移量
-        crossed_cnt = 0    # 越線車輛數
         base_sec = int(datetime.now().timestamp())  # 開始辨識之時間
+        offset = 0       # 當前影格索引向前位移量
+        crossed_cnt = 0  # 越線車輛數
 
         if model is None:
             # 錯誤：YOLO 模型未初始化
@@ -689,6 +766,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def start(self):
         """初始化參數後執行程式"""
         global ocv, vertex, types, START, END, area1, area2
+        print(zone_configuration_path, type_configuration_path, weights, rtsp_url)
         logging.info("Program start button clicked.")
         if ocv:
             # 警告：程式已經在運作。忽略重複的啟動命令
