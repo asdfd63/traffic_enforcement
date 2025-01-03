@@ -1,22 +1,4 @@
-2024-12-30 20:10:28 [INFO] Program started.
-2024-12-30 20:10:29 [INFO] Qt application started.
-2024-12-30 20:10:38 [INFO] Program start button clicked.
-2024-12-30 20:10:38 [INFO] Loaded YOLO model from C:/Users/asdfd63/PycharmProjects/Yolov8/project/best.pt
-2024-12-30 20:10:43 [INFO] Receive thread started.
-2024-12-30 20:10:43 [INFO] Display thread started.
-2024-12-30 20:10:43 [INFO] Threads started.
-2024-12-30 20:10:47 [INFO] RTSP stream opened successfully.
-2024-12-30 20:11:00 [INFO] Program stopped by user.
-2024-12-30 20:11:00 [INFO] Receive thread stopped.
-2024-12-30 20:11:00 [INFO] Display thread stopped.
-2024-12-30 20:11:11 [INFO] Program start button clicked.
-2024-12-30 20:11:11 [INFO] Loaded YOLO model from C:/Users/asdfd63/PycharmProjects/Yolov8/project/best.pt
-2024-12-30 20:11:15 [INFO] Receive thread started.
-2024-12-30 20:11:15 [INFO] Display thread started.
-2024-12-30 20:11:15 [INFO] Threads started.
-2024-12-30 20:11:19 [INFO] RTSP stream opened successfully.
-2024-12-30 20:11:34 [INFO] Program stopped by user.
-2024-12-30 20:11:34 [INFO] Receive thread stopped.
-2024-12-30 20:11:34 [INFO] Display thread stopped.
-2024-12-30 20:12:17 [WARNING] Program is not running. Ignoring stop command.
-2024-12-30 20:12:17 [INFO] Window closed.
+2025-01-02 18:11:22 [INFO] Program started.
+2025-01-02 18:11:22 [INFO] Qt application started.
+2025-01-02 18:13:40 [WARNING] Program is not running. Ignoring stop command.
+2025-01-02 18:13:40 [INFO] Window closed.

@@ -287,13 +287,13 @@ class SettingsWindow(QWidget):
         if n == 1:
             rtsp_url = self.input1.text()
         elif n == 2:
-            confidence = self.input2.text()
+            confidence = float(self.input2.text())
         elif n == 3:
-            iou = self.input3.text()
+            iou = float(self.input3.text())
         elif n == 4:
-            interval = self.input4.text()
+            interval = float(self.input4.text())
         elif n == 5:
-            parking_time = self.input5.text()
+            parking_time = float(self.input5.text())
         elif n == 6:
             if self.box.currentText() == '顯示卡':
                 device = 'cuda'
@@ -378,6 +378,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.label7 = QtWidgets.QLabel(self)
         self.label7.setGeometry(810, 750, 1500, 400)
 
+        self.label8 = QtWidgets.QLabel(self)
+        self.label8.setGeometry(1210, 750, 1500, 400)
+
         font = QtGui.QFont("微軟正黑體", 20)  # 加入文字設定
         # label 套用文字設定
         self.label1.setFont(font)
@@ -387,6 +390,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.label5.setFont(font)
         self.label6.setFont(font)
         self.label7.setFont(font)
+        self.label8.setFont(font)
 
     def create_button(self):
         # 放入按鈕 1 並設定參數
@@ -750,6 +754,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.label5.setText(f"Light: {light_type}")
                     self.label6.setText(f"Car crossed: {crossed_cnt}")
                     self.label7.setText(f"Wrong-way Cars: {len(wrongway)}")
+                    self.label8.setText(f"Parking Cars: {len(recorded)}")
 
                     frame = cv2.resize(annotated_frame, (1280, 720))  # 調整影像尺寸
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)          # 影像轉換成 RGB
