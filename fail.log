@@ -1,4 +1,13 @@
-2025-01-02 18:11:22 [INFO] Program started.
-2025-01-02 18:11:22 [INFO] Qt application started.
-2025-01-02 18:13:40 [WARNING] Program is not running. Ignoring stop command.
-2025-01-02 18:13:40 [INFO] Window closed.
+2025-01-08 12:33:51 [INFO] Program started.
+2025-01-08 12:33:52 [INFO] Qt application started.
+2025-01-08 12:34:13 [INFO] Program start button clicked.
+2025-01-08 12:34:13 [INFO] Loaded YOLO model from best.pt
+2025-01-08 12:34:14 [INFO] Receive thread started.
+2025-01-08 12:34:14 [INFO] Display thread started.
+2025-01-08 12:34:14 [INFO] Threads started.
+2025-01-08 12:34:18 [INFO] RTSP stream opened successfully.
+2025-01-08 12:34:25 [INFO] Program stopped by user.
+2025-01-08 12:34:25 [INFO] Receive thread stopped.
+2025-01-08 12:34:25 [INFO] Display thread stopped.
+2025-01-08 12:34:26 [WARNING] Program is not running. Ignoring stop command.
+2025-01-08 12:34:26 [INFO] Window closed.

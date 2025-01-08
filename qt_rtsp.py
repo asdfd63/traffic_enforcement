@@ -594,7 +594,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                         end_pos2[ID] = cur_frame
 
                             # 檢查物件是否越線 (不分車種)
-                            if START and END and ((START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y)):
+                            if START and END and ((START.x < cx < END.x or START.x > cx > END.x) or (START.y < cy < END.y or START.y > cy > END.y)) and light_type == "red":
                                 cur_side[ID] = find_point_side(START.x, START.y, END.x, END.y, cx, cy)
                                 if ID in pre_side and cur_side[ID] != pre_side[ID]:
                                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
